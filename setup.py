@@ -68,7 +68,7 @@ tf_requirements = [
 ] + tensorflow
 
 testing_requirements = [
-    'pytype==2021.8.11',  # TODO(b/206926677): update to new version.
+    'pytype',
     'pytest-xdist',
 ]
 
