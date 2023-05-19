@@ -17,11 +17,12 @@
 [1] https://arxiv.org/abs/1802.01561
 """
 
-from typing import Callable
+from typing import Callable, Mapping, Tuple
 
 from acme.agents.jax.impala import types
 from acme.jax import utils
 import haiku as hk
+import jax
 import jax.numpy as jnp
 import numpy as np
 import reverb
@@ -34,9 +35,9 @@ def impala_loss(
     *,
     discount: float,
     max_abs_reward: float = np.inf,
-    baseline_cost: float = 1.,
-    entropy_cost: float = 0.,
-) -> Callable[[hk.Params, reverb.ReplaySample], jnp.DeviceArray]:
+    baseline_cost: float = 1.0,
+    entropy_cost: float = 0.0,
+) -> Callable[[hk.Params, reverb.ReplaySample], jax.Array]:
   """Builds the standard entropy-regularised IMPALA loss function.
 
   Args:
@@ -48,11 +49,13 @@ def impala_loss(
     entropy_cost: Weighting of the entropy regulariser relative to policy loss.
 
   Returns:
-    A loss function with signature (params, data) -> loss_scalar.
+    A loss function with signature (params, data) -> (loss_scalar, metrics).
   """
 
-  def loss_fn(params: hk.Params,
-              sample: reverb.ReplaySample) -> jnp.DeviceArray:
+  def loss_fn(
+      params: hk.Params,
+      sample: reverb.ReplaySample,
+  ) -> Tuple[jax.Array, Mapping[str, jax.Array]]:
     """Batched, entropy-regularised actor-critic loss with V-trace."""
 
     # Extract the data.
@@ -108,4 +111,4 @@ def impala_loss(
 
     return mean_loss, metrics
 
-  return utils.mapreduce(loss_fn, in_axes=(None, 0))
+  return utils.mapreduce(loss_fn, in_axes=(None, 0))  # pytype: disable=bad-return-type  # jax-devicearray

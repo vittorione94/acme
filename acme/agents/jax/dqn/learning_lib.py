@@ -45,18 +45,22 @@ class ReverbUpdate(NamedTuple):
 
 class LossExtra(NamedTuple):
   """Extra information that is returned along with loss value."""
-  metrics: Dict[str, jnp.DeviceArray]
+  metrics: Dict[str, jax.Array]
   # New optional updated priorities for the samples.
-  reverb_priorities: Optional[jnp.DeviceArray] = None
+  reverb_priorities: Optional[jax.Array] = None
 
 
 class LossFn(typing_extensions.Protocol):
   """A LossFn calculates a loss on a single batch of data."""
 
-  def __call__(self, network: networks_lib.TypedFeedForwardNetwork,
-               params: networks_lib.Params, target_params: networks_lib.Params,
-               batch: reverb.ReplaySample,
-               key: networks_lib.PRNGKey) -> Tuple[jnp.DeviceArray, LossExtra]:
+  def __call__(
+      self,
+      network: networks_lib.TypedFeedForwardNetwork,
+      params: networks_lib.Params,
+      target_params: networks_lib.Params,
+      batch: reverb.ReplaySample,
+      key: networks_lib.PRNGKey,
+  ) -> Tuple[jax.Array, LossExtra]:
     """Calculates a loss on a single batch of data."""
 
 
@@ -114,7 +118,7 @@ class SGDLearner(acme.Learner):
 
       # Periodically update target networks.
       steps = state.steps + 1
-      target_params = optax.periodic_update(new_params, state.target_params,
+      target_params = optax.periodic_update(new_params, state.target_params,  # pytype: disable=wrong-arg-types  # numpy-scalars
                                             steps, target_update_period)
 
       new_training_state = TrainingState(

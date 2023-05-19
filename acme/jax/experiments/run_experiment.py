@@ -113,15 +113,16 @@ def run_experiment(experiment: config.ExperimentConfig,
 
   checkpointer = None
   if experiment.checkpointing is not None:
+    checkpointing = experiment.checkpointing
     checkpointer = savers.Checkpointer(
-        objects_to_save={
-            'learner': learner,
-            'counter': parent_counter
-        },
-        time_delta_minutes=experiment.checkpointing.time_delta_minutes,
-        directory=experiment.checkpointing.directory,
-        add_uid=experiment.checkpointing.add_uid,
-        max_to_keep=experiment.checkpointing.max_to_keep)
+        objects_to_save={'learner': learner, 'counter': parent_counter},
+        time_delta_minutes=checkpointing.time_delta_minutes,
+        directory=checkpointing.directory,
+        add_uid=checkpointing.add_uid,
+        max_to_keep=checkpointing.max_to_keep,
+        keep_checkpoint_every_n_hours=checkpointing.keep_checkpoint_every_n_hours,
+        checkpoint_ttl_seconds=checkpointing.checkpoint_ttl_seconds,
+    )
 
   # Replace the actor with a LearningActor. This makes sure that every time
   # that `update` is called on the actor it checks to see whether there is
@@ -172,7 +173,8 @@ def run_experiment(experiment: config.ExperimentConfig,
   steps = 0
   while steps < max_num_actor_steps:
     eval_loop.run(num_episodes=num_eval_episodes)
-    steps += train_loop.run(num_steps=eval_every)
+    num_steps = min(eval_every, max_num_actor_steps - steps)
+    steps += train_loop.run(num_steps=num_steps)
   eval_loop.run(num_episodes=num_eval_episodes)
 
   environment.close()
@@ -249,7 +251,7 @@ class _LearningActor(core.Actor):
         # Let iterator's prefetching thread get data from the table(s).
         time.sleep(0.001)
 
-  def update(self):
+  def update(self):  # pytype: disable=signature-mismatch  # overriding-parameter-count-checks
     if self._maybe_train():
       # Update the actor weights only when learner was updated.
       self._actor.update()

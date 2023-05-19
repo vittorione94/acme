@@ -54,7 +54,7 @@ core_requirements = [
 ]
 
 jax_requirements = [
-    'jax',
+    'jax>=0.4.3',
     'chex',
     'dm-haiku',
     'flax',
@@ -165,7 +165,6 @@ setup(
         'License :: OSI Approved :: Apache Software License',
         'Operating System :: POSIX :: Linux',
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.7',
         'Programming Language :: Python :: 3.8',
         'Programming Language :: Python :: 3.9',
         'Topic :: Scientific/Engineering :: Artificial Intelligence',

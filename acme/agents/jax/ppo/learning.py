@@ -31,6 +31,9 @@ import reverb
 import rlax
 
 
+PPOParams = networks.PPOParams
+
+
 class Batch(NamedTuple):
   """A batch of data; all shapes are expected to be [B, ...]."""
   observations: types.NestedArray
@@ -47,12 +50,14 @@ class Batch(NamedTuple):
 
 class TrainingState(NamedTuple):
   """Training state for the PPO learner."""
-  params: networks_lib.Params
+  params: PPOParams
   opt_state: optax.OptState
   random_key: networks_lib.PRNGKey
 
   # Optional counter used for exponential moving average zero debiasing
-  ema_counter: Optional[jnp.int32] = None
+  # Using float32 as it covers a larger range than int32. If using int64 we
+  # would need to do jax_enable_x64.
+  ema_counter: Optional[jnp.float32] = None
 
   # Optional parameter for maintaining a running estimate of the scale of
   # advantage estimates
@@ -135,8 +140,8 @@ class PPOLearner(acme.Learner):
         # values = values * jnp.fmax(value_std, 1e-6) + value_mean
         target_values = (target_values - value_mean) / jnp.fmax(value_std, 1e-6)
       policy_log_probs = ppo_networks.log_prob(distribution_params, actions)
-      key, sub_key = jax.random.split(key)  # pylint: disable=unused-variable
-      policy_entropies = ppo_networks.entropy(distribution_params)
+      key, sub_key = jax.random.split(key)
+      policy_entropies = ppo_networks.entropy(distribution_params, sub_key)
 
       # Compute the policy losses
       rhos = jnp.exp(policy_log_probs - behavior_log_probs)
@@ -164,7 +169,7 @@ class PPOLearner(acme.Learner):
         value_loss = jnp.mean(unclipped_value_loss)
 
       total_ppo_loss = total_policy_loss + value_cost * value_loss
-      return total_ppo_loss, {
+      return total_ppo_loss, {  # pytype: disable=bad-return-type  # numpy-scalars
           'loss_total': total_ppo_loss,
           'loss_policy_total': total_policy_loss,
           'loss_policy_pg': clipped_ppo_policy_loss,
@@ -184,7 +189,7 @@ class PPOLearner(acme.Learner):
       key, sub_key = jax.random.split(state.random_key)
 
       loss_grad, metrics = ppo_loss_grad(
-          state.params,
+          state.params.model_params,
           observations,
           actions,
           advantages,
@@ -199,7 +204,10 @@ class PPOLearner(acme.Learner):
       # Apply updates
       loss_grad = jax.lax.pmean(loss_grad, axis_name=pmap_axis_name)
       updates, opt_state = optimizer.update(loss_grad, state.opt_state)
-      params = optax.apply_updates(state.params, updates)
+      model_params = optax.apply_updates(state.params.model_params, updates)
+      params = PPOParams(
+          model_params=model_params,
+          num_sgd_steps=state.params.num_sgd_steps + 1)
 
       if log_global_norm_metrics:
         metrics['norm_grad'] = optax.global_norm(loss_grad)
@@ -249,6 +257,8 @@ class PPOLearner(acme.Learner):
         state: TrainingState,
         trajectories: types.NestedArray,
     ):
+      params_num_sgd_steps_before_update = state.params.num_sgd_steps
+
       # Update the EMA counter and obtain the zero debiasing multiplier
       if normalize_advantage or normalize_value:
         ema_counter = state.ema_counter + 1
@@ -275,7 +285,8 @@ class PPOLearner(acme.Learner):
         rewards = jnp.clip(rewards, -1. * max_abs_reward, max_abs_reward)
       discounts = termination * discount
       behavior_log_probs = extra['log_prob']
-      _, behavior_values = vmapped_network_apply(state.params, observations)
+      _, behavior_values = vmapped_network_apply(state.params.model_params,
+                                                 observations)
 
       if normalize_value:
         batch_value_first_moment = jnp.mean(behavior_values)
@@ -319,9 +330,12 @@ class PPOLearner(acme.Learner):
 
       # Exclude the last step - it was only used for bootstrapping.
       # The shape is [num_sequences, num_steps, ..]
-      observations, actions, behavior_log_probs, behavior_values = jax.tree_util.tree_map(
-          lambda x: x[:, :-1],
-          (observations, actions, behavior_log_probs, behavior_values))
+      (observations, actions, behavior_log_probs, behavior_values) = (
+          jax.tree_util.tree_map(
+              lambda x: x[:, :-1],
+              (observations, actions, behavior_log_probs, behavior_values),
+          )
+      )
 
       # Shuffle the data and break into minibatches
       batch_size = advantages.shape[0] * advantages.shape[1]
@@ -366,6 +380,14 @@ class PPOLearner(acme.Learner):
         metrics['value_mean'] = value_mean
         metrics['value_std'] = value_std
 
+      delta_params_sgd_steps = (
+          data.extras['params_num_sgd_steps'][:, 0] -
+          params_num_sgd_steps_before_update)
+      metrics['delta_params_sgd_steps_min'] = jnp.min(delta_params_sgd_steps)
+      metrics['delta_params_sgd_steps_max'] = jnp.max(delta_params_sgd_steps)
+      metrics['delta_params_sgd_steps_mean'] = jnp.mean(delta_params_sgd_steps)
+      metrics['delta_params_sgd_steps_std'] = jnp.std(delta_params_sgd_steps)
+
       return state, metrics
 
     pmapped_update_step = jax.pmap(
@@ -391,18 +413,24 @@ class PPOLearner(acme.Learner):
 
       initial_params = ppo_networks.network.init(key_init)
       initial_opt_state = optimizer.init(initial_params)
+      # Using float32 as it covers a larger range than int32. If using int64 we
+      # would need to do jax_enable_x64.
+      params_num_sgd_steps = jnp.zeros(shape=(), dtype=jnp.float32)
 
       initial_params = jax.device_put_replicated(initial_params,
                                                  self.local_learner_devices)
       initial_opt_state = jax.device_put_replicated(initial_opt_state,
                                                     self.local_learner_devices)
+      params_num_sgd_steps = jax.device_put_replicated(
+          params_num_sgd_steps, self.local_learner_devices)
 
-      ema_counter = jnp.int32(0)
+      ema_counter = jnp.float32(0)
       ema_counter = jax.device_put_replicated(ema_counter,
                                               self.local_learner_devices)
 
       init_state = TrainingState(
-          params=initial_params,
+          params=PPOParams(
+              model_params=initial_params, num_sgd_steps=params_num_sgd_steps),
           opt_state=initial_opt_state,
           random_key=key_state,
           ema_counter=ema_counter,
@@ -445,6 +473,7 @@ class PPOLearner(acme.Learner):
 
     # Initialise training state (parameters and optimizer state).
     self._state = make_initial_state(random_key)
+    self._cached_state = get_from_first_device(self._state, as_numpy=True)
 
   def step(self):
     """Does a learner step and logs the results.
@@ -454,6 +483,7 @@ class PPOLearner(acme.Learner):
     """
     sample = next(self._iterator)
     self._state, results = self._full_update_step(self._state, sample)
+    self._cached_state = get_from_first_device(self._state, as_numpy=True)
 
     # Update our counts and record it.
     counts = self._counter.increment(steps=self.num_epochs *
@@ -467,12 +497,11 @@ class PPOLearner(acme.Learner):
     self._num_full_update_steps += 1
 
   def get_variables(self, names: List[str]) -> List[networks_lib.Params]:
-    state = get_from_first_device(self._state, as_numpy=False)
-    variables = state._asdict()
-    return [variables[name] for name in names]
+    variables = self._cached_state
+    return [getattr(variables, name) for name in names]
 
   def save(self) -> TrainingState:
-    return get_from_first_device(self._state, as_numpy=False)
+    return self._cached_state
 
   def restore(self, state: TrainingState):
     # TODO(kamyar) Should the random_key come from self._state instead?
@@ -486,3 +515,4 @@ class PPOLearner(acme.Learner):
     state = jax.device_put_replicated(state, self.local_learner_devices)
     state = state._replace(random_key=random_key)
     self._state = state
+    self._cached_state = get_from_first_device(self._state, as_numpy=True)

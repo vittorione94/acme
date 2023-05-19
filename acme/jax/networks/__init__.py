@@ -19,6 +19,7 @@ from acme.jax.networks.atari import DeepIMPALAAtariNetwork
 from acme.jax.networks.atari import dqn_atari_network
 from acme.jax.networks.atari import R2D2AtariNetwork
 from acme.jax.networks.base import Action
+from acme.jax.networks.base import Entropy
 from acme.jax.networks.base import FeedForwardNetwork
 from acme.jax.networks.base import Logits
 from acme.jax.networks.base import LogProb
@@ -32,6 +33,7 @@ from acme.jax.networks.base import Params
 from acme.jax.networks.base import PolicyValueRNN
 from acme.jax.networks.base import PRNGKey
 from acme.jax.networks.base import QNetwork
+from acme.jax.networks.base import QValues
 from acme.jax.networks.base import RecurrentQNetwork
 from acme.jax.networks.base import RecurrentState
 from acme.jax.networks.base import SampleFn

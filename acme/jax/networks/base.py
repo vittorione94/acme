@@ -40,6 +40,7 @@ Logits = jnp.ndarray
 LogProb = jnp.ndarray
 Value = jnp.ndarray
 RecurrentState = types.NestedArray
+Entropy = jnp.ndarray
 
 # Commonly-used function/network signatures.
 QNetwork = Callable[[Observation], QValues]
@@ -142,7 +143,7 @@ def make_unrollable_network(
     def init() -> Tuple[NetworkOutput, RecurrentState]:
       return model(dummy_observation, model.initial_state(None))
 
-    return init, (apply, model.unroll, model.initial_state)
+    return init, (apply, model.unroll, model.initial_state)  # pytype: disable=attribute-error
 
   # Transform and unpack pure functions
   f = hk.multi_transform(make_unrollable_network_functions)
